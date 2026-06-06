@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/lexbryan/ai.it-dab.com/backend/internal/conversation"
 	"github.com/lexbryan/ai.it-dab.com/backend/internal/gatewaycore"
 	"github.com/lexbryan/ai.it-dab.com/backend/internal/vllm"
 )
 
-// GatewayChatPath is the public non-streaming chat endpoint.
+// GatewayChatPath is the public chat endpoint. A single endpoint serves both the
+// non-streaming and the SSE-streaming paths; `stream` in the body selects which.
 const GatewayChatPath = "/v1/gateway/chat"
 
 // maxChatBody bounds the request body. A request carries only the new turn(s)
@@ -25,27 +27,28 @@ type RouteRegistrar interface {
 	Handle(pattern string, handler http.Handler)
 }
 
-// upstreamCompleter is the slice of the vLLM client the handler needs.
-// *vllm.Client satisfies it.
-type upstreamCompleter interface {
+// upstreamClient is the slice of the vLLM client the gateway needs: the
+// non-streaming Complete and the streaming Stream. *vllm.Client satisfies it.
+type upstreamClient interface {
 	Complete(ctx context.Context, req vllm.ChatRequest) (*vllm.ChatResponse, error)
+	Stream(ctx context.Context, req vllm.ChatRequest) (*vllm.StreamResponse, error)
 }
 
-// ChatHandler serves the non-streaming gateway endpoint. It owns no context or
-// persistence logic — it delegates all of it to the shared core so it cannot
-// diverge from the streaming path.
+// ChatHandler serves the gateway endpoint. It owns no context or persistence
+// logic — it delegates all of it to the shared core so the streaming and
+// non-streaming paths cannot diverge.
 type ChatHandler struct {
 	core     *gatewaycore.Service
-	upstream upstreamCompleter
+	upstream upstreamClient
 }
 
 // NewChatHandler builds the handler over the shared core and an upstream client.
-func NewChatHandler(core *gatewaycore.Service, upstream upstreamCompleter) *ChatHandler {
+func NewChatHandler(core *gatewaycore.Service, upstream upstreamClient) *ChatHandler {
 	return &ChatHandler{core: core, upstream: upstream}
 }
 
-// RegisterChatRoutes mounts the non-streaming gateway endpoint behind the
-// two-key auth middleware.
+// RegisterChatRoutes mounts the gateway endpoint behind the two-key auth
+// middleware.
 func RegisterChatRoutes(mux RouteRegistrar, authn *Authenticator, h *ChatHandler) {
 	mux.Handle("POST "+GatewayChatPath, authn.RequireCredential(http.HandlerFunc(h.Chat)))
 }
@@ -74,16 +77,44 @@ type chatResponseBody struct {
 	Usage     *vllm.Usage `json:"usage,omitempty"`
 }
 
-// Chat handles a non-streaming chat turn: it resolves (or issues) the session,
-// assembles persona + history + the new turn via the core, calls vLLM, and on
-// success persists the exchange atomically and returns the assistant reply with
-// the gateway-issued session id.
+// Chat handles a chat turn on the single public gateway endpoint. It assembles
+// persona + history + the new turn via the shared core, then dispatches to the
+// non-streaming or the SSE-streaming path based on `stream`. Both paths share the
+// same preparation and the same core, so context assembly and persistence cannot
+// diverge between them.
 func (h *ChatHandler) Chat(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.prepareTurn(w, r)
+	if !ok {
+		return
+	}
+	if p.req.Stream {
+		h.streamChat(w, r, p)
+		return
+	}
+	h.completeChat(w, r, p)
+}
+
+// preparedTurn is the result of validating a request and assembling its upstream
+// context: everything both paths need to call vLLM and persist the exchange.
+type preparedTurn struct {
+	conv      conversation.Conversation
+	incoming  []gatewaycore.Message
+	assembled []gatewaycore.Message
+	effModel  string
+	req       chatRequestBody
+}
+
+// prepareTurn authenticates, decodes and validates the request, resolves (or
+// issues) the session, and assembles persona + full history + the new turn
+// through the shared core. It writes the appropriate error and returns ok=false
+// on any failure, so the streaming and non-streaming paths share identical
+// validation and context assembly.
+func (h *ChatHandler) prepareTurn(w http.ResponseWriter, r *http.Request) (*preparedTurn, bool) {
 	cred, ok := CredentialFromContext(r.Context())
 	if !ok {
 		// The auth middleware should make this unreachable; fail closed.
 		writeError(w, http.StatusUnauthorized, "unauthorized", "authentication required")
-		return
+		return nil, false
 	}
 
 	var req chatRequestBody
@@ -91,23 +122,19 @@ func (h *ChatHandler) Chat(w http.ResponseWriter, r *http.Request) {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "request body is not valid JSON")
-		return
-	}
-	if req.Stream {
-		writeError(w, http.StatusBadRequest, "invalid_request", "streaming is not supported at this endpoint")
-		return
+		return nil, false
 	}
 
 	incoming, ok := parseIncoming(w, req)
 	if !ok {
-		return
+		return nil, false
 	}
 
 	sessionID := strings.TrimSpace(req.SessionID)
 	model := strings.TrimSpace(req.Model)
 	if sessionID == "" && model == "" {
 		writeError(w, http.StatusBadRequest, "invalid_request", "model is required for a new conversation")
-		return
+		return nil, false
 	}
 
 	ctx := r.Context()
@@ -115,10 +142,10 @@ func (h *ChatHandler) Chat(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, gatewaycore.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", "session not found")
-			return
+			return nil, false
 		}
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "could not load the conversation")
-		return
+		return nil, false
 	}
 
 	effModel := model
@@ -127,7 +154,7 @@ func (h *ChatHandler) Chat(w http.ResponseWriter, r *http.Request) {
 	}
 	if effModel == "" {
 		writeError(w, http.StatusBadRequest, "invalid_request", "model is required")
-		return
+		return nil, false
 	}
 
 	persona := ""
@@ -137,16 +164,24 @@ func (h *ChatHandler) Chat(w http.ResponseWriter, r *http.Request) {
 	assembled, err := h.core.AssembleContext(ctx, persona, conv, incoming)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "could not assemble context")
-		return
+		return nil, false
 	}
 
-	resp, err := h.upstream.Complete(ctx, vllm.ChatRequest{
-		Model:       effModel,
-		Messages:    toVLLMMessages(assembled),
-		Temperature: req.Temperature,
-		TopP:        req.TopP,
-		MaxTokens:   req.MaxTokens,
-		Stop:        req.Stop,
+	return &preparedTurn{conv: conv, incoming: incoming, assembled: assembled, effModel: effModel, req: req}, true
+}
+
+// completeChat runs the non-streaming path: one upstream call, then on success
+// the new user turn(s) + assistant reply are persisted atomically and the reply
+// is returned with the gateway-issued session id. Nothing is persisted on any
+// upstream failure.
+func (h *ChatHandler) completeChat(w http.ResponseWriter, r *http.Request, p *preparedTurn) {
+	resp, err := h.upstream.Complete(r.Context(), vllm.ChatRequest{
+		Model:       p.effModel,
+		Messages:    toVLLMMessages(p.assembled),
+		Temperature: p.req.Temperature,
+		TopP:        p.req.TopP,
+		MaxTokens:   p.req.MaxTokens,
+		Stop:        p.req.Stop,
 	})
 	if err != nil {
 		// Nothing is persisted on any upstream failure. The error is sanitized;
@@ -160,14 +195,14 @@ func (h *ChatHandler) Chat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	assistant := gatewaycore.Message{Role: gatewaycore.RoleAssistant, Content: resp.Choices[0].Message.Content}
-	if err := h.core.PersistExchange(ctx, conv, incoming, assistant); err != nil {
+	if err := h.core.PersistExchange(r.Context(), p.conv, p.incoming, assistant); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "could not save the conversation")
 		return
 	}
 
 	writeJSON(w, http.StatusOK, chatResponseBody{
-		SessionID: conv.ID,
-		Model:     effModel,
+		SessionID: p.conv.ID,
+		Model:     p.effModel,
 		Message:   chatMessage{Role: assistant.Role, Content: assistant.Content},
 		Usage:     resp.Usage,
 	})
