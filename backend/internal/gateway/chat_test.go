@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -69,6 +70,11 @@ type fakeUpstream struct {
 	called bool
 	resp   *vllm.ChatResponse
 	err    error
+
+	// Streaming knobs, exercised by the SSE tests in stream_test.go.
+	streamErr      error                               // pre-stream error from Stream
+	streamChunks   []string                            // raw SSE bytes served by the default body
+	streamBodyFunc func(context.Context) io.ReadCloser // custom, ctx-aware body (disconnect/timing tests)
 }
 
 func (f *fakeUpstream) Complete(_ context.Context, req vllm.ChatRequest) (*vllm.ChatResponse, error) {
@@ -84,6 +90,22 @@ func (f *fakeUpstream) Complete(_ context.Context, req vllm.ChatRequest) (*vllm.
 		Choices: []vllm.Choice{{Message: vllm.Message{Role: "assistant", Content: "hi there"}}},
 		Usage:   &vllm.Usage{PromptTokens: 3, CompletionTokens: 2, TotalTokens: 5},
 	}, nil
+}
+
+func (f *fakeUpstream) Stream(ctx context.Context, req vllm.ChatRequest) (*vllm.StreamResponse, error) {
+	f.got = req
+	f.called = true
+	if f.streamErr != nil {
+		return nil, f.streamErr
+	}
+	var body io.ReadCloser
+	switch {
+	case f.streamBodyFunc != nil:
+		body = f.streamBodyFunc(ctx)
+	default:
+		body = io.NopCloser(strings.NewReader(strings.Join(f.streamChunks, "")))
+	}
+	return &vllm.StreamResponse{Body: body, Header: http.Header{}}, nil
 }
 
 func newChatServer(repo *fakeConvRepo, up *fakeUpstream) *ChatHandler {
@@ -293,7 +315,6 @@ func TestChat_UpstreamErrorPersistsNothing(t *testing.T) {
 
 func TestChat_Validation(t *testing.T) {
 	cases := map[string]string{
-		"streaming requested":       `{"model":"q","message":"hi","stream":true}`,
 		"no message or messages":    `{"model":"q"}`,
 		"new conversation no model": `{"message":"hi"}`,
 		"system role rejected":      `{"model":"q","messages":[{"role":"system","content":"x"}]}`,
