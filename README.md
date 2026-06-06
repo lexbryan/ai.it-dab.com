@@ -7,6 +7,9 @@ each project, retains conversation context **server-side**, injects a per-key
 persona, and proxies the call to vLLM. A Next.js admin UI manages the API
 credentials and their personas.
 
+[![CI](https://github.com/lexbryan/ai.it-dab.com/actions/workflows/ci.yml/badge.svg)](https://github.com/lexbryan/ai.it-dab.com/actions/workflows/ci.yml)
+[![coverage gate](https://img.shields.io/badge/coverage-%E2%89%A580%25-brightgreen)](#running-tests--ci)
+
 ## Architecture
 
 ```mermaid
@@ -288,3 +291,35 @@ make migrate
 make bootstrap-admin email=admin@example.com
 make health
 ```
+
+## Running tests / CI
+
+The CI pipeline (`.github/workflows/ci.yml`) runs on every PR and push to `main`:
+
+| Job | What it checks | Run locally |
+| --- | --- | --- |
+| `backend-lint` | `gofmt`, `go vet`, `golangci-lint` | `cd backend && make lint` |
+| `frontend-lint` | ESLint | `cd frontend && npm run lint` |
+| `backend-test` | `go test ./... -race` + the coverage gate | `cd backend && make cover` |
+| `e2e` | the end-to-end gateway suite against Postgres | `cd backend && make e2e` |
+| `images` | both production Docker images build | `make build` (root) |
+
+The test and e2e jobs need a throwaway Postgres. CI starts one as a service; the
+local commands expect `DAB_TEST_DATABASE_URL` to point at one (e.g. a disposable
+container or the Compose `db` service):
+
+```sh
+cd backend
+export DAB_TEST_DATABASE_URL='postgres://postgres:postgres@localhost:5432/dab_test?sslmode=disable'
+make cover   # race tests + coverage gate
+make e2e     # end-to-end gateway suite against a stub vLLM
+```
+
+**Coverage gate.** `make cover` fails if backend statement coverage drops below
+`COVER_THRESHOLD` (currently **80%**; actual is ~88%), excluding the SQL
+migrations and the `cmd/*` entrypoint mains from the denominator. Ratchet the
+floor up as coverage grows: `make cover COVER_THRESHOLD=85`.
+
+**Merge gates.** `backend-lint` and `frontend-lint` are the established required
+checks. To gate merges on the full pipeline, add `backend-test`, `e2e`, and
+`images` to the branch's required status checks in the repository settings.
