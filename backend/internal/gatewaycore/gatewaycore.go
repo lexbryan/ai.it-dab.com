@@ -96,11 +96,7 @@ func (s *Service) AssembleContext(ctx context.Context, persona string, conv conv
 		return nil, err
 	}
 
-	history := make([]Message, len(stored))
-	for i, m := range stored {
-		history[i] = Message{Role: m.Role, Content: m.Content}
-	}
-
+	history := toMessages(stored)
 	incoming = dropOverlap(history, incoming)
 	history = capHistory(history, incoming, s.maxHistory)
 
@@ -117,13 +113,32 @@ func (s *Service) AssembleContext(ctx context.Context, persona string, conv conv
 // reply in one transaction. The persona is never stored — it comes from the
 // credential each call. Callers persist ONLY on a successful upstream response;
 // on failure they simply do not call this, so nothing is stored.
+//
+// userMsgs is deduplicated against stored history with the SAME dropOverlap as
+// AssembleContext, so a caller that re-sends the last stored turn(s) does not
+// double-store them — persistence can never diverge from what was sent upstream.
 func (s *Service) PersistExchange(ctx context.Context, conv conversation.Conversation, userMsgs []Message, assistant Message) error {
+	stored, err := s.repo.LoadHistory(ctx, conv.ID)
+	if err != nil {
+		return err
+	}
+	userMsgs = dropOverlap(toMessages(stored), userMsgs)
+
 	msgs := make([]conversation.NewMessage, 0, len(userMsgs)+1)
 	for _, m := range userMsgs {
 		msgs = append(msgs, conversation.NewMessage{Role: m.Role, Content: m.Content})
 	}
 	msgs = append(msgs, conversation.NewMessage{Role: assistant.Role, Content: assistant.Content})
 	return s.repo.AppendMessages(ctx, conv.ID, msgs)
+}
+
+// toMessages converts stored rows to the core's transport-agnostic Message type.
+func toMessages(stored []conversation.Message) []Message {
+	out := make([]Message, len(stored))
+	for i, m := range stored {
+		out[i] = Message{Role: m.Role, Content: m.Content}
+	}
+	return out
 }
 
 // dropOverlap removes the longest prefix of incoming that exactly matches the

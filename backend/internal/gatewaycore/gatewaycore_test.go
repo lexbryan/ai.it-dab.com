@@ -190,6 +190,26 @@ func TestPersistExchange_StoresTurnNotPersona(t *testing.T) {
 	}
 }
 
+func TestPersistExchange_DropsReSentTail(t *testing.T) {
+	repo := newFakeRepo()
+	repo.histories["c1"] = storedMessages(RoleUser, "h1", RoleAssistant, "a1")
+	svc := NewService(repo, 0)
+
+	// The caller re-sends the last stored turn (a1) plus a genuinely new turn.
+	err := svc.PersistExchange(context.Background(), conversation.Conversation{ID: "c1"},
+		[]Message{{Role: RoleAssistant, Content: "a1"}, {Role: RoleUser, Content: "h2"}},
+		Message{Role: RoleAssistant, Content: "a2"})
+	if err != nil {
+		t.Fatalf("PersistExchange: %v", err)
+	}
+	// Only the new turn + reply are appended; the re-sent a1 is deduplicated, so
+	// persistence matches what AssembleContext sends upstream.
+	got := repo.appended["c1"]
+	if len(got) != 2 || got[0].Role != RoleUser || got[0].Content != "h2" || got[1].Content != "a2" {
+		t.Errorf("appended = %+v, want [user h2, assistant a2]", got)
+	}
+}
+
 func TestPersistExchange_FailurePropagates(t *testing.T) {
 	repo := newFakeRepo()
 	repo.appendErr = errors.New("db down")
