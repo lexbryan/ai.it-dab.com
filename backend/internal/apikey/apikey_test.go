@@ -297,6 +297,37 @@ func TestGetByID_ActiveRevokedAndMissing(t *testing.T) {
 	}
 }
 
+func TestTouchLastUsed_SetsTimestamp(t *testing.T) {
+	r, _ := newRepo(t)
+	ctx := context.Background()
+	created, err := r.Create(ctx, CreateParams{KeyID: "dab_pk_touch", SecretHash: "h"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if before, _ := r.GetByID(ctx, created.ID); before.LastUsedAt != nil {
+		t.Fatalf("last_used_at should start nil, got %v", before.LastUsedAt)
+	}
+
+	if err := r.TouchLastUsed(ctx, created.ID); err != nil {
+		t.Fatalf("TouchLastUsed: %v", err)
+	}
+	after, err := r.GetByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if after.LastUsedAt == nil {
+		t.Error("TouchLastUsed should set last_used_at")
+	}
+
+	// An unknown or malformed id is a harmless no-op, not an error.
+	if err := r.TouchLastUsed(ctx, "00000000-0000-0000-0000-000000000000"); err != nil {
+		t.Errorf("TouchLastUsed(missing) = %v, want nil no-op", err)
+	}
+	if err := r.TouchLastUsed(ctx, "not-a-uuid"); err != nil {
+		t.Errorf("TouchLastUsed(malformed) = %v, want nil no-op", err)
+	}
+}
+
 // TestGeneratedHashRoundTripsThroughDB ties the generator to storage: a minted
 // secret's hash persists and verifies against the plaintext, and the plaintext
 // itself is never what's stored.
