@@ -1,0 +1,25 @@
+# Secrets / env
+.env
+*.env
+!.env.example
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Go
+/backend/bin/
+*.test
+*.out
+coverage*.out
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+npm-debug.log*
+yarn-error.log*
+
+# Editors
+.idea/
+.vscode/
