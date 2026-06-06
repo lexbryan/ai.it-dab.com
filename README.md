@@ -154,6 +154,15 @@ These are easy to confuse, so to be explicit:
 Secrets (`VLLM_API_KEY`, `JWT_SECRET`, and the `DATABASE_URL` password) are
 masked by `Config.String()`, so a stringified config is safe to log.
 
+## Connecting a project to the gateway
+
+How another DAB project calls the gateway — the two-key model, per-key persona,
+the gateway-issued session id flow, the `POST /v1/gateway/chat` contract (auth
+headers, request body, SSE streaming format, error codes), and copy-paste
+`curl`/Node examples — is documented in **[docs/CONNECTING.md](docs/CONNECTING.md)**.
+That guide is the single source of truth for the public credential and endpoint
+contract.
+
 ## HTTP server
 
 `internal/httpserver` builds the gateway's HTTP layer: the router, the base
