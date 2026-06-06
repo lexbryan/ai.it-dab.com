@@ -261,3 +261,68 @@ func TestUpdate_NotFound(t *testing.T) {
 		t.Errorf("Update(missing) = %v, want ErrNotFound", err)
 	}
 }
+
+func TestGetByID_ActiveRevokedAndMissing(t *testing.T) {
+	r, _ := newRepo(t)
+	ctx := context.Background()
+	persona := "p"
+	created, err := r.Create(ctx, CreateParams{KeyID: "dab_pk_byid", SecretHash: "h", Name: "byid", Persona: &persona})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := r.GetByID(ctx, created.ID)
+	if err != nil || got.KeyID != "dab_pk_byid" {
+		t.Fatalf("GetByID(active) = %+v, %v", got, err)
+	}
+
+	// Still resolvable after revoke (admin management sees revoked keys).
+	if err := r.Revoke(ctx, created.ID); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	revoked, err := r.GetByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetByID(revoked) = %v, want it to still resolve", err)
+	}
+	if revoked.RevokedAt == nil {
+		t.Error("GetByID should report revoked_at on a revoked key")
+	}
+
+	// Unknown id and a malformed (non-uuid) id both map to ErrNotFound.
+	if _, err := r.GetByID(ctx, "00000000-0000-0000-0000-000000000000"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetByID(missing) = %v, want ErrNotFound", err)
+	}
+	if _, err := r.GetByID(ctx, "not-a-uuid"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetByID(malformed) = %v, want ErrNotFound", err)
+	}
+}
+
+// TestGeneratedHashRoundTripsThroughDB ties the generator to storage: a minted
+// secret's hash persists and verifies against the plaintext, and the plaintext
+// itself is never what's stored.
+func TestGeneratedHashRoundTripsThroughDB(t *testing.T) {
+	r, _ := newRepo(t)
+	ctx := context.Background()
+
+	cred, err := Generate()
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if _, err := r.Create(ctx, CreateParams{KeyID: cred.KeyID, SecretHash: cred.SecretHash, Name: "minted"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := r.GetActiveByKeyID(ctx, cred.KeyID)
+	if err != nil {
+		t.Fatalf("GetActiveByKeyID: %v", err)
+	}
+	if got.SecretHash == cred.Secret {
+		t.Fatal("stored value must be the hash, not the plaintext secret")
+	}
+	if !VerifySecret(cred.Secret, got.SecretHash) {
+		t.Error("stored hash should verify against the generated plaintext secret")
+	}
+	if VerifySecret(cred.Secret+"x", got.SecretHash) {
+		t.Error("a wrong secret must not verify")
+	}
+}

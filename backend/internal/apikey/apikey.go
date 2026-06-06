@@ -5,19 +5,21 @@
 //
 // # Secret hashing
 //
-// secret_hash stores a hash of the secret half, never the plaintext. This
-// package is strategy-agnostic — it stores and returns the opaque hash string
-// the caller supplies — but the intended strategy (chosen here, implemented by
-// the key-generation and gateway-validation tickets) is a keyed HMAC-SHA256
-// over the secret rather than bcrypt:
+// secret_hash stores a hash of the secret half, never the plaintext. The secret
+// is minted by Generate as a 256-bit crypto/rand token, so HashSecret reduces it
+// with a single SHA-256 (hex-encoded) and VerifySecret does a constant-time
+// compare — deliberately NOT bcrypt:
 //
-//   - The secret is a high-entropy random token, not a human password, so it is
-//     not brute-forceable offline; bcrypt's deliberate slowness buys little.
-//   - The gateway verifies the secret on EVERY request. A microsecond HMAC keeps
+//   - The secret is high-entropy, not a human password, so it is not
+//     brute-forceable offline; bcrypt's deliberate slowness would buy nothing.
+//   - The gateway verifies the secret on EVERY request. A microsecond hash keeps
 //     per-request cost negligible and avoids the bcrypt-CPU exhaustion an
 //     attacker could trigger by spamming a known key id with wrong secrets.
-//   - Lookup is by the public key_id (unique, indexed) first, then a
-//     constant-time compare of the hash, so the hash need only be verifiable.
+//   - Lookup is by the public key_id (unique, indexed) first, then the
+//     constant-time hash compare, so a stolen secret_hash is neither reversible
+//     nor forgeable given the 256-bit input. No server-side pepper is needed for
+//     the same reason — it would add a required deployment secret for no real
+//     gain here.
 //
 // Admin passwords still use bcrypt (see internal/auth) because those are
 // low-entropy and verified rarely.
@@ -44,8 +46,24 @@ var (
 	ErrKeyIDTaken = errors.New("apikey: key id already exists")
 )
 
-// uniqueViolation is the Postgres SQLSTATE for a unique-constraint violation.
-const uniqueViolation = "23505"
+// Postgres SQLSTATEs we map to sentinel errors.
+const (
+	uniqueViolation = "23505" // duplicate key
+	// invalidTextRepresentation is raised when an id argument is not a valid
+	// uuid. A syntactically invalid id cannot match any row, so the id-keyed
+	// lookups treat it as a miss rather than a 500.
+	invalidTextRepresentation = "22P02"
+)
+
+// isNotFound reports whether err from an id-keyed query means "no such row":
+// either no rows matched, or the id was not even a valid uuid.
+func isNotFound(err error) bool {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true
+	}
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == invalidTextRepresentation
+}
 
 // APIKey is a full credential row, including the secret hash. It is returned by
 // Create and GetActiveByKeyID, where the caller needs the hash to verify a
@@ -134,6 +152,21 @@ func (r *Repository) GetActiveByKeyID(ctx context.Context, keyID string) (APIKey
 	return k, nil
 }
 
+// GetByID returns metadata for the credential with the given id, whether active
+// or revoked, for the admin management path (e.g. editing a key's persona). The
+// secret hash is never selected. An unknown or malformed id returns ErrNotFound.
+func (r *Repository) GetByID(ctx context.Context, id string) (Metadata, error) {
+	const q = `SELECT ` + metaColumns + ` FROM api_keys WHERE id = $1`
+	m, err := scanMetadata(r.pool.QueryRow(ctx, q, id))
+	if err != nil {
+		if isNotFound(err) {
+			return Metadata{}, ErrNotFound
+		}
+		return Metadata{}, fmt.Errorf("apikey: querying key: %w", err)
+	}
+	return m, nil
+}
+
 // List returns metadata for every credential (active and revoked), newest first.
 // The secret hash is never selected, so it cannot leak through this path.
 func (r *Repository) List(ctx context.Context) ([]Metadata, error) {
@@ -171,7 +204,7 @@ func (r *Repository) Update(ctx context.Context, id string, p UpdateParams) (Met
 		RETURNING ` + metaColumns
 	m, err := scanMetadata(r.pool.QueryRow(ctx, q, id, p.Name, p.Persona))
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if isNotFound(err) {
 			return Metadata{}, ErrNotFound
 		}
 		return Metadata{}, fmt.Errorf("apikey: updating key: %w", err)
@@ -186,6 +219,9 @@ func (r *Repository) Revoke(ctx context.Context, id string) error {
 	const q = `UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL`
 	tag, err := r.pool.Exec(ctx, q, id)
 	if err != nil {
+		if isNotFound(err) {
+			return ErrNotFound
+		}
 		return fmt.Errorf("apikey: revoking key: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
