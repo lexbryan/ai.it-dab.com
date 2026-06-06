@@ -55,6 +55,18 @@ func HashPassword(plaintext string) (string, error) {
 	return string(h), nil
 }
 
+// dummyHash is a valid bcrypt hash of a throwaway value. DummyVerify runs a real
+// bcrypt comparison against it so a failed user lookup spends roughly the same
+// time as a real verification, mitigating user-enumeration by timing.
+var dummyHash, _ = bcrypt.GenerateFromPassword([]byte("dab-timing-equalizer"), bcrypt.DefaultCost)
+
+// DummyVerify performs a throwaway bcrypt comparison and discards the result. A
+// login handler calls it when the email is unknown so the response time does
+// not reveal whether the account exists.
+func DummyVerify(password string) {
+	_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
+}
+
 // VerifyPassword reports whether plaintext matches the bcrypt-encoded hash,
 // using bcrypt's constant-time comparison. A correct password returns
 // (true, nil); an incorrect one returns (false, nil); a malformed or
