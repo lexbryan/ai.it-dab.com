@@ -1,8 +1,45 @@
 # DAB AI — Server
 
-> Stub README. The project overview, architecture diagram, and run instructions
-> are written in a later ticket. **This file currently owns only the
-> "Repository layout" section below.**
+The DAB AI gateway is a small API gateway in front of a **self-hosted vLLM**
+(OpenAI-compatible) model. Other DAB projects — hub, dab-it-admin, accounting,
+and so on — call this gateway instead of the model directly: it authenticates
+each project, retains conversation context **server-side**, injects a per-key
+persona, and proxies the call to vLLM. A Next.js admin UI manages the API
+credentials and their personas.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    projects["Calling DAB projects<br/>(hub, accounting, dab-it-admin)"]
+    browser["Admin browser"]
+    frontend["Next.js frontend"]
+    gw["Go gateway"]
+    pg[("Postgres")]
+    vllm[("vLLM — qwen")]
+
+    browser -->|admin JWT cookie| frontend
+    frontend -->|admin API, credentialed CORS| gw
+    projects -->|"two keys: X-DAB-Key-Id + X-DAB-Secret"| gw
+    gw -->|"Authorization: Bearer VLLM_API_KEY"| vllm
+    gw <-->|sessions + history| pg
+```
+
+There are two credential hops, and **two trust boundaries** that must never be
+crossed:
+
+- **Project → Gateway (public hop).** Each calling project presents a **two-key**
+  credential — a public key id (`dab_pk_…`) and a secret (`dab_sk_…`) — on every
+  request, and the gateway injects that key's **persona** as the leading system
+  message. **Project keys never reach vLLM.**
+- **Gateway → vLLM (internal hop).** The gateway authenticates upstream with a
+  single shared `VLLM_API_KEY`. **The `VLLM_API_KEY` never leaves the gateway** —
+  it is never returned downstream, logged, or exposed to a project.
+
+The detailed public contract a caller uses (exact headers, endpoint path, request
+body, SSE streaming format, and the gateway-issued session id) lives in the
+[connecting guide](docs/CONNECTING.md). The admin UI session is a separate JWT
+cookie, distinct from the project two-key credentials.
 
 ## Repository layout
 
@@ -11,12 +48,14 @@ metadata:
 
 | Path | Stack | Purpose |
 | --- | --- | --- |
-| [`backend/`](backend) | Go 1.22+ | API gateway in front of the self-hosted vLLM model. Entry point: `cmd/server`. Internal packages: `internal/{config,httpserver,db,version}`. |
-| [`frontend/`](frontend) | Next.js | Admin UI for managing API keys and personas (placeholder scaffold for now). |
+| [`backend/`](backend) | Go 1.22+ | API gateway in front of the self-hosted vLLM model. Commands: `cmd/{server,migrate,createsuperuser}`. Domain/infra packages under `internal/` (config, httpserver, db, auth, token, user, apikey, conversation, gateway, gatewaycore, vllm, ratelimit, …); SQL migrations under `migrations/`. |
+| [`frontend/`](frontend) | Next.js | Admin UI for managing API keys and personas. |
 
-Root metadata — `.gitignore`, this `README.md`, `.github/` (CI), and the
-`.env.example` environment contract — lives at the repository root. Docker and
-Compose files are introduced in later tickets.
+Root metadata lives at the repository root: this `README.md`, `.gitignore`,
+`.github/` (CI), the `.env.example` environment contract, the
+[`docker-compose.yml`](docker-compose.yml) that wires the full stack, the
+`Makefile` of developer/operator targets, and [`docs/`](docs) (the connecting
+guide).
 
 ### Backend Go module path
 
@@ -29,6 +68,60 @@ github.com/lexbryan/ai.it-dab.com/backend
 It mirrors the GitHub remote (`github.com/lexbryan/ai.it-dab.com`) with a
 `/backend` suffix for the monorepo. Every backend import uses this prefix, e.g.
 `github.com/lexbryan/ai.it-dab.com/backend/internal/version`.
+
+## Getting started
+
+**Prerequisites:** Docker and Docker Compose.
+
+```sh
+# 1. Create your env file and fill in the secrets (see Configuration below).
+make setup        # copies .env.example -> .env
+$EDITOR .env      # set POSTGRES_PASSWORD, VLLM_API_KEY, JWT_SECRET (at least)
+
+# 2. Bring up the stack (postgres + backend + frontend) on one network.
+make up           # == docker compose up -d --build
+
+# 3. Apply database migrations, then create the first admin.
+make migrate
+make bootstrap-admin email=admin@example.com   # prompts for the password
+
+# 4. Confirm it's healthy.
+make health       # GET gateway /healthz -> 200
+```
+
+The frontend is then at <http://localhost:3000> and the gateway at
+<http://localhost:8080> (host ports configurable via `GATEWAY_HOST_PORT` /
+`FRONTEND_HOST_PORT`). Log in with the superuser you just created. **Postgres and
+vLLM are intentionally not reachable from the host** (see the network model
+below).
+
+`make migrate` and `make bootstrap-admin` run the backend image's `/migrate` and
+`/createsuperuser` binaries **inside the Compose network**. On the **host** (for
+local Go development) the same tools run with `cd backend && go run ./cmd/migrate
+up` / `go run ./cmd/createsuperuser -email …`, pointing `DATABASE_URL` at a
+host-reachable database. The server can also apply migrations itself at startup
+when `AUTO_MIGRATE=true` (default off).
+
+**Data persistence.** Postgres data lives in a named volume, so `make down`
+followed by `make up` keeps your superuser, keys, and conversations. The
+**destructive** `make reset` runs `docker compose down -v`, which **wipes that
+volume** and all data, then recreates the stack clean. Use `make logs` to follow
+output and `make down` to stop.
+
+## Docker network model
+
+All services join one user-defined bridge network and find each other by service
+name — the backend reaches Postgres at `postgres:5432` and vLLM at
+`http://qwen:8000`. Port publishing is deliberately minimal:
+
+- **Published to the host:** the gateway (`8080`) and the frontend (`3000`) only.
+- **Internal-only (never host-published):** Postgres and vLLM (`qwen`). They are
+  reachable only from inside the network.
+
+vLLM (`qwen`) is **external** — this repo does not build a model image; in
+production it is the real vLLM server attached to this network (a `vllm` Compose
+profile is provided as a placeholder). Postgres uses a named volume at its data
+directory, so its data survives container restarts and `down`/`up`.
 
 ## Configuration
 
