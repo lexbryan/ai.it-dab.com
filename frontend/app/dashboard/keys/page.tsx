@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 
+import { ApiError } from '@/lib/api-client';
 import { isActive, listKeys, revokeKey, type ApiKeyMetadata } from '@/lib/keys';
 import { useAuthErrorRedirect } from '@/lib/use-auth';
 
@@ -14,6 +15,10 @@ type LoadState =
 export default function KeysPage() {
   const handleAuthError = useAuthErrorRedirect();
   const [state, setState] = useState<LoadState>({ status: 'loading' });
+  const [confirming, setConfirming] = useState<ApiKeyMetadata | null>(null);
+  const [revoking, setRevoking] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setState({ status: 'loading' });
@@ -31,21 +36,39 @@ export default function KeysPage() {
     void load();
   }, [load]);
 
-  async function onRevoke(key: ApiKeyMetadata) {
-    if (
-      !window.confirm(
-        `Revoke "${key.name}"? Clients using this key will stop working.`,
-      )
-    ) {
+  function startRevoke(key: ApiKeyMetadata) {
+    setNotice(null);
+    setActionError(null);
+    setConfirming(key);
+  }
+
+  async function confirmRevoke() {
+    if (confirming === null) {
       return;
     }
+    const key = confirming;
+    setRevoking(true);
+    setActionError(null);
     try {
       await revokeKey(key.id);
+      setConfirming(null);
+      setNotice(`Revoked ${key.key_id}.`);
       await load();
     } catch (err) {
-      if (!handleAuthError(err)) {
-        setState({ status: 'error' });
+      if (handleAuthError(err)) {
+        return;
       }
+      setConfirming(null);
+      if (err instanceof ApiError && err.status === 404) {
+        // Already gone — reconcile by refreshing; not a user-facing error.
+        setNotice(`${key.key_id} was already revoked.`);
+        await load();
+      } else {
+        // Keep the list as-is so it stays consistent; surface the failure.
+        setActionError(`Could not revoke ${key.key_id}. Please try again.`);
+      }
+    } finally {
+      setRevoking(false);
     }
   }
 
@@ -57,6 +80,17 @@ export default function KeysPage() {
           New API key
         </Link>
       </div>
+
+      {notice !== null ? (
+        <p role="status" style={noticeStyle}>
+          {notice}
+        </p>
+      ) : null}
+      {actionError !== null ? (
+        <p role="alert" style={errorBanner}>
+          {actionError}
+        </p>
+      ) : null}
 
       {state.status === 'loading' && <p>Loading…</p>}
 
@@ -106,7 +140,7 @@ export default function KeysPage() {
                   {isActive(key) && (
                     <>
                       {' · '}
-                      <button type="button" onClick={() => void onRevoke(key)}>
+                      <button type="button" onClick={() => startRevoke(key)}>
                         Revoke
                       </button>
                     </>
@@ -117,6 +151,36 @@ export default function KeysPage() {
           </tbody>
         </table>
       )}
+
+      {confirming !== null ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Confirm revoke"
+          style={dialog}
+        >
+          <p>
+            Revoke <code>{confirming.key_id}</code>? Clients using this key will
+            stop working immediately. This cannot be undone.
+          </p>
+          <div style={{ display: 'flex', gap: '0.75rem' }}>
+            <button
+              type="button"
+              onClick={() => void confirmRevoke()}
+              disabled={revoking}
+            >
+              {revoking ? 'Revoking…' : 'Revoke key'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirming(null)}
+              disabled={revoking}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -170,4 +234,24 @@ const td: CSSProperties = {
   borderBottom: '1px solid #efefef',
   padding: '0.5rem',
   verticalAlign: 'top',
+};
+const noticeStyle: CSSProperties = {
+  background: '#e8f5e9',
+  border: '1px solid #b6dab9',
+  borderRadius: 4,
+  padding: '0.5rem 0.75rem',
+};
+const errorBanner: CSSProperties = {
+  background: '#fdecea',
+  border: '1px solid #f5c2c0',
+  borderRadius: 4,
+  padding: '0.5rem 0.75rem',
+  color: '#7a1c17',
+};
+const dialog: CSSProperties = {
+  marginTop: '1rem',
+  maxWidth: 480,
+  border: '1px solid #e5e5e5',
+  borderRadius: 6,
+  padding: '1rem 1.25rem',
 };

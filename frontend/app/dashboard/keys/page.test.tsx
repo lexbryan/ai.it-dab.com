@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -154,16 +160,34 @@ describe('KeysPage', () => {
     );
   });
 
-  it('revokes a key after confirmation, then refreshes the list', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ keys: sampleKeys }));
+  it('opens a confirmation dialog identifying the key id, with no call yet', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ keys: sampleKeys }));
     render(<KeysPage />);
     await screen.findByText('dab_pk_abc');
 
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
-    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 })); // DELETE
-    fetchMock.mockResolvedValueOnce(jsonResponse({ keys: sampleKeys })); // reload
+    fireEvent.click(screen.getAllByRole('button', { name: /^revoke$/i })[0]);
 
-    fireEvent.click(screen.getAllByRole('button', { name: /revoke/i })[0]);
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText('dab_pk_abc')).toBeInTheDocument();
+    expect(hasDelete(fetchMock)).toBe(false);
+  });
+
+  it('revokes after confirmation, shows a notice, and refreshes', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ keys: sampleKeys })); // load
+    render(<KeysPage />);
+    await screen.findByText('dab_pk_abc');
+
+    fireEvent.click(screen.getAllByRole('button', { name: /^revoke$/i })[0]);
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 })); // DELETE
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        keys: [
+          { ...sampleKeys[0], revoked_at: '2026-03-02T00:00:00Z' },
+          sampleKeys[1],
+        ],
+      }),
+    ); // reload
+    fireEvent.click(screen.getByRole('button', { name: /revoke key/i }));
 
     await waitFor(() => {
       const del = fetchMock.mock.calls.find(
@@ -171,19 +195,46 @@ describe('KeysPage', () => {
       );
       expect(del?.[0]).toBe('http://api.test/api/admin/keys/1');
     });
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      /revoked dab_pk_abc/i,
+    );
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
-  it('does not revoke when the confirmation is dismissed', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ keys: sampleKeys }));
+  it('cancels without calling the backend', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ keys: sampleKeys }));
     render(<KeysPage />);
     await screen.findByText('dab_pk_abc');
 
-    vi.spyOn(window, 'confirm').mockReturnValue(false);
-    fireEvent.click(screen.getAllByRole('button', { name: /revoke/i })[0]);
+    fireEvent.click(screen.getAllByRole('button', { name: /^revoke$/i })[0]);
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
 
-    const del = fetchMock.mock.calls.find(
-      (c) => (c[1] as RequestInit | undefined)?.method === 'DELETE',
-    );
-    expect(del).toBeUndefined();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(hasDelete(fetchMock)).toBe(false);
+  });
+
+  it('surfaces an error and keeps the list when revoke fails', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ keys: sampleKeys })); // load
+    render(<KeysPage />);
+    await screen.findByText('dab_pk_abc');
+
+    fireEvent.click(screen.getAllByRole('button', { name: /^revoke$/i })[0]);
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ error: { type: 'internal_error', message: 'boom' } }, 500),
+    ); // DELETE fails
+    fireEvent.click(screen.getByRole('button', { name: /revoke key/i }));
+
+    expect(
+      await screen.findByText(/could not revoke dab_pk_abc/i),
+    ).toBeInTheDocument();
+    // The list is still present and consistent.
+    expect(screen.getByText('dab_pk_abc')).toBeInTheDocument();
+    expect(screen.getByText('Prod')).toBeInTheDocument();
   });
 });
+
+function hasDelete(mock: typeof fetchMock): boolean {
+  return mock.mock.calls.some(
+    (c) => (c[1] as RequestInit | undefined)?.method === 'DELETE',
+  );
+}
