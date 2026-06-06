@@ -300,19 +300,19 @@ The CI pipeline (`.github/workflows/ci.yml`) runs on every PR and push to `main`
 | --- | --- | --- |
 | `backend-lint` | `gofmt`, `go vet`, `golangci-lint` | `cd backend && make lint` |
 | `frontend-lint` | ESLint | `cd frontend && npm run lint` |
-| `backend-test` | `go test ./... -race` + the coverage gate | `cd backend && make cover` |
-| `e2e` | the end-to-end gateway suite against Postgres | `cd backend && make e2e` |
+| `backend-test` | `go test -race` (excl. e2e) + the coverage gate | `cd backend && make cover` |
 | `images` | both production Docker images build | `make build` (root) |
 
-The test and e2e jobs need a throwaway Postgres. CI starts one as a service; the
-local commands expect `DAB_TEST_DATABASE_URL` to point at one (e.g. a disposable
-container or the Compose `db` service):
+The end-to-end suite is **not** part of CI; run it locally with `make e2e`. The
+`backend-test` job and both local DB commands need a throwaway Postgres. CI starts
+one as a service; the local commands expect `DAB_TEST_DATABASE_URL` to point at
+one (e.g. a disposable container or the Compose `db` service):
 
 ```sh
 cd backend
 export DAB_TEST_DATABASE_URL='postgres://postgres:postgres@localhost:5432/dab_test?sslmode=disable'
-make cover   # race tests + coverage gate
-make e2e     # end-to-end gateway suite against a stub vLLM
+make cover   # race tests (excl. e2e) + coverage gate
+make e2e     # end-to-end gateway suite against a stub vLLM (local only)
 ```
 
 **Coverage gate.** `make cover` fails if backend statement coverage drops below
@@ -321,5 +321,5 @@ migrations and the `cmd/*` entrypoint mains from the denominator. Ratchet the
 floor up as coverage grows: `make cover COVER_THRESHOLD=85`.
 
 **Merge gates.** `backend-lint` and `frontend-lint` are the established required
-checks. To gate merges on the full pipeline, add `backend-test`, `e2e`, and
-`images` to the branch's required status checks in the repository settings.
+checks. To gate merges on the full pipeline, add `backend-test` and `images` to
+the branch's required status checks in the repository settings.
