@@ -24,11 +24,12 @@ e2e: ## Run the end-to-end gateway suite against a throwaway Postgres (needs DAB
 	@test -n "$(DAB_TEST_DATABASE_URL)" || { echo "set DAB_TEST_DATABASE_URL to a throwaway Postgres (e.g. the compose 'db' service)"; exit 1; }
 	go test -race -count=1 ./internal/e2e/...
 
-cover: ## Run all tests with -race + coverage and enforce the coverage gate (needs DAB_TEST_DATABASE_URL)
+cover: ## Run unit + integration tests with -race + coverage and enforce the gate (needs DAB_TEST_DATABASE_URL; run the e2e suite separately via `make e2e`)
 	@test -n "$(DAB_TEST_DATABASE_URL)" || { echo "set DAB_TEST_DATABASE_URL to a throwaway Postgres (e.g. the compose 'db' service)"; exit 1; }
 	# -p 1 runs packages serially: the integration tests share one database and
 	# reset its schema, so they must not run concurrently (see internal/dbtest).
-	go test ./... -race -p 1 -covermode=atomic -coverprofile=coverage.out -coverpkg=./...
+	# internal/e2e is excluded here and run on its own via `make e2e`.
+	go test $$(go list ./... | grep -v '/internal/e2e$$') -race -p 1 -covermode=atomic -coverprofile=coverage.out -coverpkg=./...
 	@bash scripts/coverage-gate.sh coverage.out $(COVER_THRESHOLD)
 
 run: ## Run the server from source

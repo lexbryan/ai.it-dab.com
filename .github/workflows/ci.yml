@@ -1,11 +1,11 @@
 name: CI
 
-# CI pipeline for the monorepo. Fast lint gates plus the heavier full-stack gates:
-# race-enabled backend tests with a coverage floor, the end-to-end gateway suite
-# against a Postgres service, and both production image builds.
+# CI pipeline for the monorepo. Fast lint gates plus the heavier gates:
+# race-enabled backend tests with a coverage floor and both production image
+# builds. The end-to-end suite runs locally via `make e2e`, not in CI.
 #
 # Branch protection on `main` decides which checks are REQUIRED to merge. The lint
-# jobs are the established required gates; add backend-test, e2e, and images to the
+# jobs are the established required gates; add backend-test and images to the
 # branch's required status checks to gate merges on the full pipeline.
 
 on:
@@ -128,36 +128,6 @@ jobs:
       - name: Tests (-race) + coverage gate
         working-directory: backend
         run: make cover
-
-  # The end-to-end gateway suite, run via the same `make e2e` developers run
-  # locally, against a Postgres service.
-  e2e:
-    name: e2e
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: dab_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      DAB_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/dab_test?sslmode=disable
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-      - name: End-to-end gateway suite
-        working-directory: backend
-        run: make e2e
 
   # Both production images must build from a clean checkout.
   images:
