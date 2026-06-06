@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { isActive, listKeys, revokeKey, type ApiKeyMetadata } from './keys';
+import {
+  createKey,
+  getKey,
+  isActive,
+  listKeys,
+  revokeKey,
+  updateKey,
+  type ApiKeyMetadata,
+} from './keys';
 
 const fetchMock = vi.fn<typeof fetch>();
 
@@ -51,6 +59,38 @@ describe('keys api', () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe('http://api.test/api/admin/keys/k1');
     expect(init?.method).toBe('DELETE');
+  });
+
+  it('createKey POSTs name + persona (null when omitted)', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ ...sampleKey, secret: 'dab_sk_x' }, 201),
+    );
+
+    await createKey({ name: 'Prod' });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://api.test/api/admin/keys');
+    expect(init?.method).toBe('POST');
+    expect(init?.body).toBe(JSON.stringify({ name: 'Prod', persona: null }));
+  });
+
+  it('getKey returns the matching key or null', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ keys: [sampleKey] }));
+    expect(await getKey('k1')).toEqual(sampleKey);
+
+    fetchMock.mockResolvedValue(jsonResponse({ keys: [sampleKey] }));
+    expect(await getKey('missing')).toBeNull();
+  });
+
+  it('updateKey PATCHes the credential by id', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ ...sampleKey, name: 'New' }));
+
+    await updateKey('k1', { name: 'New', persona: null });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://api.test/api/admin/keys/k1');
+    expect(init?.method).toBe('PATCH');
+    expect(init?.body).toBe(JSON.stringify({ name: 'New', persona: null }));
   });
 
   it('isActive reflects the revoked_at field', () => {

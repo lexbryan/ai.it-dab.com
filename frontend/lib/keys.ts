@@ -19,12 +19,74 @@ interface ListKeysResponse {
   keys: ApiKeyMetadata[];
 }
 
+/**
+ * The create response. It is the ONLY place the plaintext `secret` is ever
+ * returned — it cannot be retrieved again, so it must be revealed once and then
+ * dropped from memory.
+ */
+export interface CreatedKey {
+  id: string;
+  key_id: string;
+  secret: string;
+  name: string;
+  persona: string | null;
+  created_at: string;
+}
+
+export interface CreateKeyInput {
+  name: string;
+  persona?: string | null;
+}
+
+export interface UpdateKeyInput {
+  name?: string;
+  persona?: string | null;
+}
+
 /** Fetch every API credential (active and revoked) as non-secret metadata. */
 export async function listKeys(
   options?: ApiRequestOptions,
 ): Promise<ApiKeyMetadata[]> {
   const res = await api.get<ListKeysResponse>('/api/admin/keys', options);
   return res.keys;
+}
+
+/** Fetch a single credential's metadata by id, or null when absent. The backend
+ * exposes no single-key GET, so this derives it from the list. */
+export async function getKey(
+  id: string,
+  options?: ApiRequestOptions,
+): Promise<ApiKeyMetadata | null> {
+  const keys = await listKeys(options);
+  return keys.find((key) => key.id === id) ?? null;
+}
+
+/**
+ * Create a credential. The response carries the plaintext secret exactly once;
+ * callers must reveal it and then discard it (never store or log it).
+ */
+export async function createKey(
+  input: CreateKeyInput,
+  options?: ApiRequestOptions,
+): Promise<CreatedKey> {
+  return api.post<CreatedKey>(
+    '/api/admin/keys',
+    { name: input.name, persona: input.persona ?? null },
+    options,
+  );
+}
+
+/** Update a credential's label and/or persona without rotating its secret. */
+export async function updateKey(
+  id: string,
+  input: UpdateKeyInput,
+  options?: ApiRequestOptions,
+): Promise<ApiKeyMetadata> {
+  return api.patch<ApiKeyMetadata>(
+    `/api/admin/keys/${encodeURIComponent(id)}`,
+    input,
+    options,
+  );
 }
 
 /** Soft-revoke a credential so it immediately stops authenticating. */
