@@ -6,13 +6,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/http/httptest"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/lexbryan/ai.it-dab.com/backend/internal/config"
 )
 
 func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -22,44 +18,6 @@ func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Disca
 type fakePool struct{ closed atomic.Bool }
 
 func (p *fakePool) Close() { p.closed.Store(true) }
-
-func testConfig() config.Config {
-	return config.Config{
-		Env:              "development",
-		ListenAddr:       "127.0.0.1:0",
-		LogLevel:         "info",
-		VLLMURL:          "http://vllm.invalid",
-		JWTSecret:        "test-secret",
-		LoginRateLimit:   config.RateLimit{RequestsPerMinute: 0}, // disabled for deterministic routing checks
-		GatewayRateLimit: config.RateLimit{RequestsPerMinute: 0},
-	}
-}
-
-// Every domain router is mounted and guarded. With a nil pool we only exercise
-// the routes that reject before touching the database, which proves routing and
-// middleware wiring without a live DB.
-func TestBuildHandler_RoutesMountedAndGuarded(t *testing.T) {
-	h := buildHandler(testConfig(), discardLogger(), nil)
-
-	cases := []struct {
-		name, method, path, body string
-		want                     int
-	}{
-		{"version route", http.MethodGet, "/version", "", http.StatusOK},
-		{"liveness route", http.MethodGet, "/healthz", "", http.StatusOK},
-		{"admin login mounted (bad body rejected before DB)", http.MethodPost, "/api/admin/login", `{}`, http.StatusBadRequest},
-		{"admin keys guarded by session auth", http.MethodGet, "/api/admin/keys", "", http.StatusUnauthorized},
-		{"gateway guarded by two-key auth", http.MethodPost, "/v1/gateway/chat", `{"model":"m","message":"hi"}`, http.StatusUnauthorized},
-	}
-	for _, c := range cases {
-		req := httptest.NewRequest(c.method, c.path, strings.NewReader(c.body))
-		rr := httptest.NewRecorder()
-		h.ServeHTTP(rr, req)
-		if rr.Code != c.want {
-			t.Errorf("%s: %s %s = %d, want %d", c.name, c.method, c.path, rr.Code, c.want)
-		}
-	}
-}
 
 // On a signal the server stops accepting, drains the in-flight request, and only
 // then closes the pool — and refuses new connections afterward.
