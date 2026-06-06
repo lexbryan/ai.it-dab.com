@@ -33,6 +33,7 @@ import (
 	applog "github.com/lexbryan/ai.it-dab.com/backend/internal/log"
 	"github.com/lexbryan/ai.it-dab.com/backend/internal/ratelimit"
 	"github.com/lexbryan/ai.it-dab.com/backend/internal/token"
+	"github.com/lexbryan/ai.it-dab.com/backend/internal/usage"
 	"github.com/lexbryan/ai.it-dab.com/backend/internal/user"
 	"github.com/lexbryan/ai.it-dab.com/backend/internal/version"
 	"github.com/lexbryan/ai.it-dab.com/backend/internal/vllm"
@@ -129,7 +130,10 @@ func buildHandler(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) ht
 	// chat handler. Order matters — the limiter reads the api_key_id the auth
 	// middleware resolves into the request context.
 	core := gatewaycore.NewService(convs, 0) // 0 -> default history cap
-	chat := gateway.NewChatHandler(core, vllm.New(cfg))
+	// The audit recorder is best-effort and async, so a slow or failing usage
+	// write never adds latency to, or fails, a gateway call.
+	auditor := usage.Async(usage.NewRepository(pool), logger)
+	chat := gateway.NewChatHandler(core, vllm.New(cfg), auditor)
 	gatewayAuthn := gateway.NewAuthenticator(keys)
 	gatewayRL := ratelimit.PerKey(cfg.GatewayRateLimit, gatewayCredentialKey)
 	router.Handle("POST "+gateway.GatewayChatPath,

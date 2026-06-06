@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -13,8 +14,12 @@ import (
 
 	"github.com/lexbryan/ai.it-dab.com/backend/internal/conversation"
 	"github.com/lexbryan/ai.it-dab.com/backend/internal/gatewaycore"
+	applog "github.com/lexbryan/ai.it-dab.com/backend/internal/log"
 	"github.com/lexbryan/ai.it-dab.com/backend/internal/vllm"
 )
+
+// discardLogger is a no-op logger for tests that do not assert on log output.
+func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 // fakeConvRepo is an in-memory gatewaycore.ConvRepo mirroring the real repo's
 // tenant-scoped semantics, so the handler can be tested with the REAL core but
@@ -109,12 +114,12 @@ func (f *fakeUpstream) Stream(ctx context.Context, req vllm.ChatRequest) (*vllm.
 }
 
 func newChatServer(repo *fakeConvRepo, up *fakeUpstream) *ChatHandler {
-	return NewChatHandler(gatewaycore.NewService(repo, 0), up)
+	return NewChatHandler(gatewaycore.NewService(repo, 0), up, nil)
 }
 
 func chatReq(body string, cred Credential) *http.Request {
 	r := httptest.NewRequest(http.MethodPost, GatewayChatPath, strings.NewReader(body))
-	return r.WithContext(withCredential(r.Context(), cred))
+	return r.WithContext(applog.WithContext(withCredential(r.Context(), cred), discardLogger()))
 }
 
 func credWithPersona(id, persona string) Credential {
