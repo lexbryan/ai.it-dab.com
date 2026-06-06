@@ -60,3 +60,52 @@ These are easy to confuse, so to be explicit:
 
 Secrets (`VLLM_API_KEY`, `JWT_SECRET`, and the `DATABASE_URL` password) are
 masked by `Config.String()`, so a stringified config is safe to log.
+
+## HTTP server
+
+`internal/httpserver` builds the gateway's HTTP layer: the router, the base
+middleware stack, and a configured `*http.Server`.
+
+**Router — standard-library `net/http.ServeMux`.** Go 1.22 method-based patterns
+(`"GET /version"`) cover the small routing surface (admin API + one gateway
+endpoint) with zero third-party dependencies. Crucially the stdlib mux does not
+buffer responses, so Server-Sent Events from the gateway stream through
+immediately and `http.Flusher`/`http.Hijacker` survive the whole middleware
+chain. Domains attach handlers through the `Router.Handle` / `Router.HandleFunc`
+seam without editing the core; a `/version` route proves the wiring.
+
+**No global write timeout.** The server sets read and idle timeouts
+(`ReadHeaderTimeout` for slowloris protection, `ReadTimeout`, `IdleTimeout`) but
+**deliberately leaves `http.Server.WriteTimeout` unset**. A global write timeout
+caps the time from end-of-request-headers to end-of-response-write, which would
+truncate long-lived SSE streams. Streaming is bounded by request context /
+per-route deadlines instead.
+
+**Base middleware order** (outermost → innermost): request ID + structured
+logging → CORS → panic recovery. Logging is outermost so it records the final
+status (including a 500 synthesized by recovery); recovery is innermost so it
+wraps only handler execution. No layer re-wraps the `ResponseWriter`, so the
+flusher reaches the handler. Panic recovery logs the value and stack, returns a
+generic 500 (never leaking internals), and does not append a body to a response
+a handler already started streaming.
+
+### CORS
+
+CORS is configured from `CORS_ALLOWED_ORIGINS` (comma-separated). The admin
+browser app calls the API cross-origin **with credentials** (the admin JWT,
+whether carried as a cookie or an `Authorization` header), so the middleware:
+
+- reflects the **specific** matched origin and sets
+  `Access-Control-Allow-Credentials: true`. Per the Fetch spec a credentialed
+  response may never use `Access-Control-Allow-Origin: *`, so the wildcard is
+  never emitted;
+- answers `OPTIONS` preflight directly (it never reaches application handlers),
+  advertising the allowed methods/headers and a `Vary: Origin` so caches key on
+  the origin;
+- grants nothing to origins outside the allowlist (an empty allowlist denies all
+  cross-origin browser access).
+
+This is **browser-enforced**: requests without an `Origin` header are unaffected.
+The public gateway endpoint is therefore not protected by CORS — its callers are
+server-to-server API-key clients that send no `Origin`, and it relies on its
+two-key authentication, not CORS, for access control.
