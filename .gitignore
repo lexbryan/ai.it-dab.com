@@ -20,6 +20,10 @@ out/
 npm-debug.log*
 yarn-error.log*
 
+# TypeScript build artifacts
+next-env.d.ts
+*.tsbuildinfo
+
 # Editors
 .idea/
 .vscode/
