@@ -7,7 +7,12 @@ PKG     := ./...
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev")
 LDFLAGS := -X $(MODULE)/internal/version.Version=$(VERSION)
 
-.PHONY: build test e2e run lint tidy migrate migrate-down migrate-status migrate-create
+# Starting backend coverage gate (statements, excluding migrations + cmd mains).
+# Current coverage is ~88%; ratchet this upward as coverage grows. CI fails a PR
+# that drops below it.
+COVER_THRESHOLD ?= 80
+
+.PHONY: build test cover e2e run lint tidy migrate migrate-down migrate-status migrate-create
 
 build: ## Compile the server binary into bin/server
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/server
@@ -18,6 +23,13 @@ test: ## Run the Go test suite
 e2e: ## Run the end-to-end gateway suite against a throwaway Postgres (needs DAB_TEST_DATABASE_URL)
 	@test -n "$(DAB_TEST_DATABASE_URL)" || { echo "set DAB_TEST_DATABASE_URL to a throwaway Postgres (e.g. the compose 'db' service)"; exit 1; }
 	go test -race -count=1 ./internal/e2e/...
+
+cover: ## Run all tests with -race + coverage and enforce the coverage gate (needs DAB_TEST_DATABASE_URL)
+	@test -n "$(DAB_TEST_DATABASE_URL)" || { echo "set DAB_TEST_DATABASE_URL to a throwaway Postgres (e.g. the compose 'db' service)"; exit 1; }
+	# -p 1 runs packages serially: the integration tests share one database and
+	# reset its schema, so they must not run concurrently (see internal/dbtest).
+	go test ./... -race -p 1 -covermode=atomic -coverprofile=coverage.out -coverpkg=./...
+	@bash scripts/coverage-gate.sh coverage.out $(COVER_THRESHOLD)
 
 run: ## Run the server from source
 	go run -ldflags "$(LDFLAGS)" ./cmd/server
