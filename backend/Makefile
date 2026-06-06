@@ -7,7 +7,7 @@ PKG     := ./...
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev")
 LDFLAGS := -X $(MODULE)/internal/version.Version=$(VERSION)
 
-.PHONY: build test run lint tidy
+.PHONY: build test run lint tidy migrate migrate-down migrate-status migrate-create
 
 build: ## Compile the server binary into bin/server
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/server
@@ -32,3 +32,15 @@ lint: ## gofmt check + go vet + golangci-lint (mirrors the CI backend-lint gate)
 
 tidy: ## Tidy go.mod / go.sum
 	go mod tidy
+
+migrate: ## Apply all pending DB migrations (needs DATABASE_URL etc. in env)
+	go run ./cmd/migrate up
+
+migrate-down: ## Roll back the most recent migration
+	go run ./cmd/migrate down
+
+migrate-status: ## List every migration and whether it is applied
+	go run ./cmd/migrate status
+
+migrate-create: ## Scaffold a timestamped migration pair: make migrate-create name="create users"
+	go run ./cmd/migrate create "$(name)"
