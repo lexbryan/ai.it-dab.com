@@ -25,25 +25,21 @@ import (
 
 	"github.com/lexbryan/ai.it-dab.com/backend/internal/config"
 	applog "github.com/lexbryan/ai.it-dab.com/backend/internal/log"
+	"github.com/lexbryan/ai.it-dab.com/backend/internal/version"
 )
 
 // NewMux returns the scaffold handler: the base middleware chain wrapping the
-// router (/version and the placeholder /healthz). It uses a development logger
-// and no CORS origins.
+// router with /version and the liveness/readiness endpoints. It uses a
+// development logger, no CORS origins, and no database — so /readyz reports
+// not-ready until the server-lifecycle ticket wires the real pool.
 //
 // This is an interim entry point for the current scaffold binary. The
 // server-lifecycle ticket replaces it with explicit config-driven wiring
-// (config.Load → logger → Router(cfg, logger) → New(cfg, handler)) in
-// cmd/server.
+// (config.Load → logger → Router(cfg, logger) → RegisterHealth → New(cfg,
+// handler)) in cmd/server.
 func NewMux() http.Handler {
 	logger := applog.New(config.Config{Env: "development"})
-	return NewRouter(config.Config{}, logger).Handler()
-}
-
-// Healthz reports process liveness with a 200. Readiness and upstream (vLLM)
-// signals are added by the health/readiness ticket.
-func Healthz(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ok\n"))
+	r := NewRouter(config.Config{}, logger)
+	RegisterHealth(r, HealthDeps{Version: version.String()})
+	return r.Handler()
 }

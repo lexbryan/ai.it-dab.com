@@ -46,15 +46,6 @@ func TestRouter_VersionRoute(t *testing.T) {
 	}
 }
 
-func TestRouter_HealthzRoute(t *testing.T) {
-	r := NewRouter(config.Config{}, captureLogger(&bytes.Buffer{}))
-	rr := httptest.NewRecorder()
-	r.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("/healthz status = %d, want 200", rr.Code)
-	}
-}
-
 // TestRouter_BaseChainAppliesToAllRoutes proves the logging middleware wraps
 // every route: a freshly registered handler gets a request ID echoed on the
 // response and a summary line logged.
