@@ -78,8 +78,17 @@ func (r *Repository) GetByID(ctx context.Context, id string) (User, error) {
 	return r.getOne(ctx, q, id)
 }
 
-func (r *Repository) getOne(ctx context.Context, query string, arg any) (User, error) {
-	u, err := scanUser(r.pool.QueryRow(ctx, query, arg))
+// UpdatePassword replaces a user's password hash (and bumps updated_at),
+// returning the updated row. ErrNotFound if no user has that id.
+func (r *Repository) UpdatePassword(ctx context.Context, id, passwordHash string) (User, error) {
+	const q = `UPDATE users SET password_hash = $2, updated_at = now()
+		WHERE id = $1
+		RETURNING ` + selectColumns
+	return r.getOne(ctx, q, id, passwordHash)
+}
+
+func (r *Repository) getOne(ctx context.Context, query string, args ...any) (User, error) {
+	u, err := scanUser(r.pool.QueryRow(ctx, query, args...))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return User{}, ErrNotFound
