@@ -128,10 +128,12 @@ docker build -t dab-frontend \
 docker run --rm -p 3000:3000 dab-frontend          # GET / → 200
 ```
 
-The **backend** image carries only the static Go binary; all configuration
-(`PORT`, `DATABASE_URL`, `VLLM_URL`, `VLLM_API_KEY`, `JWT_SECRET`,
-`CORS_ALLOWED_ORIGINS`, …) is read from the environment at runtime, so no secret
-is ever baked in.
+The **backend** image carries the static Go binaries — the server (default
+entrypoint) plus the `migrate` and `createsuperuser` operator CLIs, so the same
+image can serve and run migrations / bootstrap the first admin inside the
+network. All configuration (`PORT`, `DATABASE_URL`, `VLLM_URL`, `VLLM_API_KEY`,
+`JWT_SECRET`, `CORS_ALLOWED_ORIGINS`, …) is read from the environment at runtime,
+so no secret is ever baked in.
 
 ### `NEXT_PUBLIC_API_BASE_URL`: build-time vs. runtime
 
@@ -152,3 +154,35 @@ route-handler/server-side proxy that forwards to the backend service name at
 runtime — trades that rebuild for an extra hop and is deferred; the build-arg
 approach is chosen here for simplicity and to keep the gateway the single CORS
 surface.
+
+## Development
+
+Common workflows are wrapped in the root `Makefile` — run `make help` to list
+them. Every target that touches the stack fails fast with a clear message if
+`.env` is missing (run `make setup` first).
+
+| Target | What it does |
+| --- | --- |
+| `make setup` | Copy `.env.example` → `.env` if missing; set the secrets before `make up`. |
+| `make build` | Build all Docker images. |
+| `make up` | Start the stack (postgres, backend, frontend) in the background. |
+| `make down` | Stop the stack (the Postgres volume is kept). |
+| `make logs` | Follow logs for all services. |
+| `make ps` | Service status and published ports. |
+| `make health` | Check the gateway is healthy (`GET /healthz`). |
+| `make migrate` | Apply all pending DB migrations. |
+| `make migrate-status` | List every migration and whether it is applied. |
+| `make bootstrap-admin email=a@b.com [password=...]` | Create the first superuser. |
+| `make reset` | **Destructive:** wipe the Postgres volume, then recreate the stack clean. |
+
+`migrate` and `bootstrap-admin` run the backend image's `/migrate` and
+`/createsuperuser` binaries **inside the Compose network**, because Postgres is
+internal-only (never host-published). A typical first run:
+
+```sh
+make setup     # then edit .env: set POSTGRES_PASSWORD, VLLM_API_KEY, JWT_SECRET
+make up
+make migrate
+make bootstrap-admin email=admin@example.com
+make health
+```
