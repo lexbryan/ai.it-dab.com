@@ -64,8 +64,20 @@ func WithContext(ctx context.Context, logger *slog.Logger) context.Context {
 // FromContext returns the request-scoped logger, or slog.Default() if none is
 // attached. The result is never nil.
 func FromContext(ctx context.Context) *slog.Logger {
+	return FromContextOr(ctx, nil)
+}
+
+// FromContextOr returns the request-scoped logger attached to ctx, or fallback
+// when none is attached. If fallback is also nil it returns slog.Default(). The
+// result is never nil. This lets a caller supply its own default (e.g. a
+// component logger) instead of the global one when the context carries no
+// request-scoped logger.
+func FromContextOr(ctx context.Context, fallback *slog.Logger) *slog.Logger {
 	if l, ok := ctx.Value(loggerKey).(*slog.Logger); ok && l != nil {
 		return l
+	}
+	if fallback != nil {
+		return fallback
 	}
 	return slog.Default()
 }
