@@ -81,3 +81,14 @@ func VerifySecret(secret, storedHash string) bool {
 	got := sha256.Sum256([]byte(secret))
 	return subtle.ConstantTimeCompare(got[:], want) == 1
 }
+
+// dummyHash is a fixed, valid hash used by DummyVerify.
+var dummyHash = HashSecret("dab.api-key.timing-equalizer")
+
+// DummyVerify runs a verification against a fixed hash and discards the result.
+// The gateway calls it when a key id is unknown so the response spends the same
+// hashing work as the known-key path, leaving no timing signal for whether a key
+// id exists.
+func DummyVerify(secret string) {
+	_ = VerifySecret(secret, dummyHash)
+}

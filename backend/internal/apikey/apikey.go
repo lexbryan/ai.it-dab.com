@@ -230,6 +230,21 @@ func (r *Repository) Revoke(ctx context.Context, id string) error {
 	return nil
 }
 
+// TouchLastUsed best-effort sets last_used_at to now for the credential with the
+// given id. The gateway calls it after a successful auth; it is not on the
+// critical path, so callers typically run it detached and ignore the result. An
+// unknown id is a harmless no-op (no row updated, no error).
+func (r *Repository) TouchLastUsed(ctx context.Context, id string) error {
+	const q = `UPDATE api_keys SET last_used_at = now() WHERE id = $1`
+	if _, err := r.pool.Exec(ctx, q, id); err != nil {
+		if isNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("apikey: touching last_used_at: %w", err)
+	}
+	return nil
+}
+
 // scanner is the subset of pgx.Row both QueryRow results and rows iteration
 // satisfy.
 type scanner interface {
