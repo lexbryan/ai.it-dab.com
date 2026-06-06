@@ -1,0 +1,84 @@
+# Full DAB AI gateway stack on one internal network.
+#
+# Configuration comes from a local .env (copy .env.example -> .env and fill it).
+# No secrets are written inline here; everything is substituted from .env.
+#
+# Port policy: only the gateway (backend) and the frontend are published to the
+# host. Postgres and vLLM (qwen) are reachable ONLY on the internal network by
+# service name (postgres:5432, qwen:8000) and are never host-published.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-dab}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-dab}
+    # Named volume at the data dir, so data survives `down`/`up`/restart. Only a
+    # `down -v` (see `make reset`) wipes it.
+    volumes:
+      - dab_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dab} -d ${POSTGRES_DB:-dab}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [dabnet]
+    restart: unless-stopped
+    # Intentionally no `ports:` — Postgres is internal-only.
+
+  backend:
+    build:
+      context: ./backend
+      args:
+        VERSION: ${VERSION:-docker}
+    # The backend reads all its configuration (DATABASE_URL, VLLM_URL,
+    # VLLM_API_KEY, JWT_SECRET, CORS_ALLOWED_ORIGINS, rate limits, ...) from the
+    # environment. DATABASE_URL resolves `postgres` and VLLM_URL resolves `qwen`
+    # by service name on dabnet.
+    env_file: [.env]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      # Gateway public port (the only backend port published). The host port is
+      # configurable via GATEWAY_HOST_PORT to avoid local conflicts.
+      - "${GATEWAY_HOST_PORT:-8080}:8080"
+    networks: [dabnet]
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # NEXT_PUBLIC_* is inlined into the browser bundle at BUILD time, so the
+        # browser-facing gateway URL is a build arg (not a runtime env). The
+        # default points the browser at the gateway's published host port.
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8080}
+    environment:
+      PORT: 3000
+    depends_on: [backend]
+    ports:
+      - "${FRONTEND_HOST_PORT:-3000}:3000" # frontend (published)
+    networks: [dabnet]
+    restart: unless-stopped
+
+  qwen:
+    # The self-hosted vLLM model — the gateway's upstream at http://qwen:8000.
+    # We do NOT build it; in production this is the real vLLM server attached to
+    # this network. It is behind the "vllm" profile so the default
+    # `docker compose up` does not try to start a model here (there is no model
+    # image by default); enable it with `docker compose --profile vllm up` once a
+    # vLLM image is provided via VLLM_IMAGE. Never host-published.
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:latest}
+    profiles: ["vllm"]
+    expose: ["8000"]
+    networks: [dabnet]
+    restart: unless-stopped
+
+networks:
+  dabnet:
+    driver: bridge
+
+volumes:
+  dab_pgdata:
