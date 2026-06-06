@@ -16,6 +16,14 @@ import (
 // the resolved one back on the response.
 const HeaderRequestID = "X-Request-Id"
 
+// StatusWriter reports whether a response has begun. The ResponseWriter that
+// Middleware installs implements it (through the conditional wrappers), which
+// lets downstream middleware such as panic recovery avoid corrupting a response
+// that a handler already started streaming.
+type StatusWriter interface {
+	Written() bool
+}
+
 // Middleware returns request-logging middleware. For each request it:
 //   - resolves a request ID (inbound X-Request-Id header, else a fresh random
 //     id) and echoes it on the response,
@@ -109,6 +117,9 @@ func (r *responseRecorder) Write(b []byte) (int, error) {
 // Unwrap exposes the underlying writer so http.ResponseController can reach
 // capabilities (deadlines, etc.) that this recorder does not itself wrap.
 func (r *responseRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
+// Written reports whether a status/header has been written to the response.
+func (r *responseRecorder) Written() bool { return r.wroteHeader }
 
 // flush commits an implicit 200 (so the logged status matches the wire status
 // and a later WriteHeader is correctly ignored) and then flushes the underlying
