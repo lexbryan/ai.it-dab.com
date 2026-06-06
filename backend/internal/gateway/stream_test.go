@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/lexbryan/ai.it-dab.com/backend/internal/conversation"
+	"github.com/lexbryan/ai.it-dab.com/backend/internal/gatewaycore"
+	applog "github.com/lexbryan/ai.it-dab.com/backend/internal/log"
 	"github.com/lexbryan/ai.it-dab.com/backend/internal/vllm"
 )
 
@@ -32,7 +34,7 @@ func sseChunk(content string) string {
 // streamReq builds a gateway request carrying the given context and credential.
 func streamReq(ctx context.Context, body string, cred Credential) *http.Request {
 	r := httptest.NewRequest(http.MethodPost, GatewayChatPath, strings.NewReader(body))
-	return r.WithContext(withCredential(ctx, cred))
+	return r.WithContext(applog.WithContext(withCredential(ctx, cred), discardLogger()))
 }
 
 // flushRecorder is a ResponseRecorder that counts Flush calls and (optionally)
@@ -381,7 +383,8 @@ func TestStreamChat_TruncatedFinalFrameStaysWellFormed(t *testing.T) {
 func TestStreamChat_NoFlusher_Returns500JSON(t *testing.T) {
 	repo := newFakeConvRepo()
 	up := &fakeUpstream{}
-	h := newChatServer(repo, up)
+	rec := &fakeRecorder{}
+	h := NewChatHandler(gatewaycore.NewService(repo, 0), up, rec)
 
 	w := newNoFlushWriter()
 	h.Chat(w, streamReq(context.Background(), `{"model":"qwen","message":"hi","stream":true}`, credWithPersona("key-1", "P")))
@@ -394,6 +397,10 @@ func TestStreamChat_NoFlusher_Returns500JSON(t *testing.T) {
 	}
 	if up.called {
 		t.Error("upstream must not be called when streaming is impossible")
+	}
+	// The accepted call is still audited exactly once.
+	if records := rec.all(); len(records) != 1 || records[0].Outcome != "internal_error" {
+		t.Errorf("no-flusher audit = %+v, want exactly one internal_error record", records)
 	}
 	assertNothingPersisted(t, repo)
 }

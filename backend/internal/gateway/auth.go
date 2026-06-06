@@ -80,10 +80,10 @@ func (a *Authenticator) RequireCredential(next http.Handler) http.Handler {
 		cred, err := a.authenticate(r)
 		switch {
 		case errors.Is(err, errInvalidCredential):
-			writeError(w, http.StatusUnauthorized, "unauthorized", "a valid api key id and secret are required")
+			writeError(w, errUnauthorized, "a valid api key id and secret are required")
 			return
 		case err != nil:
-			writeError(w, http.StatusServiceUnavailable, "unavailable", "could not verify credentials, try again")
+			writeError(w, errUnavailable, "could not verify credentials, try again")
 			return
 		}
 		a.touch(cred.ID)
