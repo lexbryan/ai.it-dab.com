@@ -1,0 +1,24 @@
+# Dependencies and build output are regenerated inside the image.
+node_modules/
+.next/
+out/
+
+# Logs and local files.
+npm-debug.log*
+yarn-error.log*
+coverage/
+
+# Never ship env files into the build context.
+.env
+*.env
+
+# VCS and container metadata.
+.git
+.gitignore
+Dockerfile
+.dockerignore
+
+# TypeScript build artifacts and docs.
+*.tsbuildinfo
+next-env.d.ts
+README.md

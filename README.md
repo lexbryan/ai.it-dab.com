@@ -109,3 +109,46 @@ This is **browser-enforced**: requests without an `Origin` header are unaffected
 The public gateway endpoint is therefore not protected by CORS — its callers are
 server-to-server API-key clients that send no `Origin`, and it relies on its
 two-key authentication, not CORS, for access control.
+
+## Containers
+
+Both apps have production Dockerfiles (multi-stage, non-root, no secrets baked
+into any layer). They build from a clean checkout with **no `.env` present**;
+each folder has a `.dockerignore` excluding `node_modules`, build caches, env
+files, VCS, and test artifacts.
+
+```bash
+# Backend → tiny distroless static image, runs as nonroot (uid 65532).
+docker build -t dab-backend ./backend
+docker run --rm -p 8080:8080 dab-backend          # GET /healthz → 200
+
+# Frontend → Next.js standalone, runs as the node user (uid 1000).
+docker build -t dab-frontend \
+  --build-arg NEXT_PUBLIC_API_BASE_URL=http://localhost:8080 ./frontend
+docker run --rm -p 3000:3000 dab-frontend          # GET / → 200
+```
+
+The **backend** image carries only the static Go binary; all configuration
+(`PORT`, `DATABASE_URL`, `VLLM_URL`, `VLLM_API_KEY`, `JWT_SECRET`,
+`CORS_ALLOWED_ORIGINS`, …) is read from the environment at runtime, so no secret
+is ever baked in.
+
+### `NEXT_PUBLIC_API_BASE_URL`: build-time vs. runtime
+
+`NEXT_PUBLIC_*` values are inlined into the browser bundle at **build** time, not
+read at runtime. This project resolves that by passing the gateway URL as a
+Docker **build arg** (`ARG NEXT_PUBLIC_API_BASE_URL`); Compose supplies it from
+`.env`. The value must be the URL the **user's browser** uses to reach the
+gateway — e.g. `http://localhost:8080` (the published host port) in local
+Compose — **not** the internal Compose service name (`http://backend:8080`),
+which only resolves inside the Compose network and is unreachable from the
+browser. The browser calls the gateway cross-origin; the gateway's credentialed
+CORS policy (above) permits it.
+
+**Tradeoff:** because the URL is baked at build time, the frontend image is
+environment-specific and must be rebuilt per environment (or per release with the
+target URL). The alternative — keeping the browser same-origin via a Next.js
+route-handler/server-side proxy that forwards to the backend service name at
+runtime — trades that rebuild for an extra hop and is deferred; the build-arg
+approach is chosen here for simplicity and to keep the gateway the single CORS
+surface.

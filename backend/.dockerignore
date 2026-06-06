@@ -1,0 +1,18 @@
+# Keep the build context lean and free of local/secret files.
+bin/
+*.test
+*.out
+coverage*.out
+
+# Never ship env files into the build context.
+.env
+*.env
+
+# VCS and container metadata are not needed inside the image.
+.git
+.gitignore
+Dockerfile
+.dockerignore
+
+# Docs aren't needed to build the binary.
+README.md
