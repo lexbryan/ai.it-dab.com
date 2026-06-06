@@ -7,13 +7,17 @@ PKG     := ./...
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev")
 LDFLAGS := -X $(MODULE)/internal/version.Version=$(VERSION)
 
-.PHONY: build test run lint tidy migrate migrate-down migrate-status migrate-create
+.PHONY: build test e2e run lint tidy migrate migrate-down migrate-status migrate-create
 
 build: ## Compile the server binary into bin/server
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/server
 
 test: ## Run the Go test suite
 	go test $(PKG)
+
+e2e: ## Run the end-to-end gateway suite against a throwaway Postgres (needs DAB_TEST_DATABASE_URL)
+	@test -n "$(DAB_TEST_DATABASE_URL)" || { echo "set DAB_TEST_DATABASE_URL to a throwaway Postgres (e.g. the compose 'db' service)"; exit 1; }
+	go test -race -count=1 ./internal/e2e/...
 
 run: ## Run the server from source
 	go run -ldflags "$(LDFLAGS)" ./cmd/server
