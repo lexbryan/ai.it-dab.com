@@ -168,11 +168,14 @@ func TestMigrate_RoundTrip(t *testing.T) {
 	}
 	defer pool.Close()
 
-	// Reset to a clean slate so the test is deterministic on a shared DB.
+	// Reset to a true clean slate so the round-trip is deterministic regardless
+	// of what migrations (and their dependent objects, e.g. a citext column that
+	// pins the citext extension) a previous test left behind. Dropping and
+	// recreating the schema removes every table, index, and extension at once.
+	// Run integration tests serially (go test -p 1) against the shared database.
 	for _, stmt := range []string{
-		"DROP TABLE IF EXISTS schema_migrations",
-		"DROP EXTENSION IF EXISTS citext",
-		"DROP EXTENSION IF EXISTS pgcrypto",
+		"DROP SCHEMA public CASCADE",
+		"CREATE SCHEMA public",
 	} {
 		if _, err := pool.Exec(ctx, stmt); err != nil {
 			t.Fatalf("reset (%s): %v", stmt, err)

@@ -32,6 +32,16 @@ func Pool(t *testing.T) *pgxpool.Pool {
 	if err != nil {
 		t.Fatalf("dbtest: connecting: %v", err)
 	}
+	// Start each test from a clean schema, then migrate. This is deterministic
+	// and self-heals from any partial state a prior crashed run left behind
+	// (e.g. tables present without a schema_migrations record). Run integration
+	// tests serially (go test -p 1) against the shared database.
+	for _, stmt := range []string{"DROP SCHEMA public CASCADE", "CREATE SCHEMA public"} {
+		if _, err := pool.Exec(ctx, stmt); err != nil {
+			pool.Close()
+			t.Fatalf("dbtest: resetting schema: %v", err)
+		}
+	}
 	if _, err := migrate.Migrate(ctx, pool); err != nil {
 		pool.Close()
 		t.Fatalf("dbtest: applying migrations: %v", err)
