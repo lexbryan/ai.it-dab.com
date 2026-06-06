@@ -19,15 +19,16 @@ type Router struct {
 	logger *slog.Logger
 }
 
-// NewRouter builds a Router and registers the baseline routes (/version proves
-// the wiring; /healthz is the scaffold liveness placeholder).
+// NewRouter builds a Router and registers the baseline /version route, which
+// proves the base middleware chain is wired. Liveness/readiness are mounted
+// separately via RegisterHealth (they need dependencies the router does not
+// carry); domain routers attach the rest through the Handle/HandleFunc seam.
 func NewRouter(cfg config.Config, logger *slog.Logger) *Router {
 	if logger == nil {
 		logger = applog.New(cfg)
 	}
 	r := &Router{mux: http.NewServeMux(), cfg: cfg, logger: logger}
 	r.HandleFunc("GET /version", versionHandler)
-	r.HandleFunc("GET /healthz", Healthz)
 	return r
 }
 
